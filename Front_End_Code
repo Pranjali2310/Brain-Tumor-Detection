@@ -1,0 +1,90 @@
+import streamlit as st
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing import image
+import numpy as np
+from PIL import Image
+
+# 1. Page Configuration
+st.set_page_config(page_title="Brain Tumor Detection", layout="centered")
+
+# 2. Fix for Keras 3 'list object has no attribute shape' error
+# This ensures older models load correctly in newer Keras environments
+@st.cache_resource
+def load_tumor_model(model_path):
+    try:
+        # Define a custom DepthwiseConv2D that ignores the 'groups' argument
+        from tensorflow.keras.layers import DepthwiseConv2D
+
+        class FixedDepthwiseConv2D(DepthwiseConv2D):
+            def __init__(self, **kwargs):
+                if 'groups' in kwargs:
+                    kwargs.pop('groups')  # Remove the offending argument
+                super().__init__(**kwargs)
+
+        # Load with custom_objects mapping
+        return load_model(
+            model_path, 
+            custom_objects={'DepthwiseConv2D': FixedDepthwiseConv2D}
+        )
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
+
+# 3. Preprocessing Function
+def prepare_image(img, target_size=(224, 224)):
+    """
+    Converts PIL image to a processed NumPy array.
+    Target size should match your model's training input (e.g., 150x150 or 224x224).
+    """
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    
+    img = img.resize(target_size)
+    img_array = image.img_to_array(img)
+    # Ensure it's a float32 numpy array and normalize if required
+    img_array = np.expand_dims(img_array, axis=0) 
+    img_array = img_array / 255.0
+    return img_array
+
+# --- UI Layout ---
+st.title("🧠 Brain Tumor Classification")
+st.write("Upload an MRI scan to check for tumor presence.")
+
+# Load the model
+# Replace 'your_model.h5' with your actual filename
+model = load_tumor_model('keras_model.h5')
+
+uploaded_file = st.file_uploader("Choose an MRI image...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None and model is not None:
+    # Display the uploaded image
+    img = Image.open(uploaded_file)
+    st.image(img, caption="Uploaded MRI Scan", use_column_width=True)
+    
+    with st.spinner('Analyzing...'):
+        # Process and Predict
+        # NOTE: Ensure target_size matches what your model expects!
+        processed_img = prepare_image(img, target_size=(224, 224))
+        prediction = model.predict(processed_img)
+        
+        # Handling different output types (Binary vs Categorical)
+        if prediction.shape[1] == 1:
+            # Binary Classification
+            confidence = prediction[0][0]
+            label = "Tumor Detected" if confidence > 0.5 else "No Tumor"
+            score = confidence if confidence > 0.5 else (1 - confidence)
+        else:
+            # Multi-class Classification
+            classes = ['Glioma', 'Meningioma', 'No Tumor', 'Pituitary']
+            label = classes[np.argmax(prediction)]
+            score = np.max(prediction)
+
+    # Output Results
+    st.markdown("---")
+    st.subheader(f"Result: **{label}**")
+    st.progress(float(score))
+    st.write(f"Confidence: {score:.2%}")
+
+elif model is None:
+    st.warning("Please ensure the model file is in the same directory as app.py.")
